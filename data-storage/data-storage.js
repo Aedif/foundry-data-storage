@@ -1,6 +1,8 @@
 const MODULE_ID = 'data-storage';
 
-//  Index structure: id: {name, thumb, tags, type, desc}
+/**
+ * Entry representing one record of data
+ */
 class Entry {
   constructor(id, pack, index, document) {
     this.id = id;
@@ -9,28 +11,53 @@ class Entry {
     if (document) this.document = document;
   }
 
-  async getData() {
-    if (!this.document) await this.load();
-    if (!this.document) throw Error(`Unable to load Entry: ${this.pack} ${this.id}`);
-
-    return this.document.getFlag(MODULE_ID, 'data');
-  }
-
+  /**
+   * UUID of the underlying JournalEntry document
+   */
   get uuid() {
     return `Compendium.` + this.pack + '.JournalEntry.' + this.id;
   }
 
-  async load() {}
+  /**
+   * Override data stored within this entry with the update
+   * @param {object} update
+   */
+  async update(update) {
+    if (!this.document) await this.load();
+    this.document.setFlag(MODULE_ID, 'data', [update]);
+  }
+
+  /**
+   * Retrieve data stored within the document
+   * @returns {object}
+   */
+  async data() {
+    if (!this.document) await this.load();
+    return this.document.getFlag(MODULE_ID, 'data')[0];
+  }
+
+  /**
+   * Load the document
+   * @returns {JournalEntryDocument}
+   */
+  async load() {
+    if (!this.document) this.document = await fromUuid(this.uuid);
+    if (!this.document) throw Error(`Unable to load Entry: ${this.uuid}`);
+    return this.document;
+  }
 }
 
 export class DataCollection {
   static workingPack;
 
+  // Default pack the data records will be stored within
   static DEFAULT_PACK = 'world.data-storage';
+
+  // ID of the special meta document which will store the index
   static META_INDEX_ID = 'DataStorageMetaD';
 
   /**
-   * Retrieves a pack, it one doesn't exist and it's a DEFAULT_PACK; create it
+   * Retrieves a pack, it one doesn't exist and if it's a DEFAULT_PACK; create it
    * @param {string} packId
    * @returns
    */
@@ -43,14 +70,19 @@ export class DataCollection {
         packageType: 'world',
       });
 
-      await this._initMetaDocument(pack);
+      await this._initMetaDocument(packId);
     }
 
     return compendium;
   }
 
-  static async _initMetaDocument(pack) {
-    const compendium = game.packs.get(pack);
+  /**
+   * Initializes a special metadata document which will contain the index of all the records
+   * @param {string} packId
+   * @returns
+   */
+  static async _initMetaDocument(packId) {
+    const compendium = game.packs.get(packId);
     const metaDoc = await compendium.getDocument(this.META_INDEX_ID);
     if (metaDoc) return metaDoc;
 
@@ -58,26 +90,16 @@ export class DataCollection {
       [
         {
           _id: this.META_INDEX_ID,
-          name: '!!! METADATA !!!',
+          name: '!!! METADATA: DO NOT DELETE !!!',
           flags: { [MODULE_ID]: { index: {} } },
         },
       ],
       {
-        pack: pack,
+        pack: packId,
         keepId: true,
       }
     );
     return documents[0];
-  }
-
-  static parseMetaDocument(metaDocument) {
-    const rawIndex = metaDocument.getFlag(MODULE_ID, 'index');
-
-    const index = [];
-    for (const [id, content] of Object.entries(rawIndex)) {
-      index.push(new Entry(id, metaDocument.pack, content));
-    }
-    return index;
   }
 
   /**
@@ -124,7 +146,7 @@ export class DataCollection {
 
     const index = { name, thumb, tags, type, desc };
 
-    const documents = await pack.createDocument([{ name, flags: { [MODULE_ID]: { data, index } } }], {
+    const documents = await pack.createDocument([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
       pack: metaDocument.pack,
     });
 
@@ -139,14 +161,14 @@ export class DataCollection {
    * @param {*} param0
    * @returns
    */
-  static async getEntries({ uuid, name, type, query, tags, matchAnyTag = true, full = true, entries } = {}) {
+  static async retrieve({ uuid, name, types, query, tags, matchAnyTag = true, full = false, entries } = {}) {
     if (uuid) {
       const uuids = Array.isArray(uuid) ? uuid : [uuid];
       entries = await this.getEntriesFromUUID(uuids, { full });
-    } else if (!name && !type && !tags && !query)
-      throw Error('UUID, Name, Type, Tags, and/or Query required to retrieve Entries.');
-    else if (query && (type || tags || name))
-      throw console.warn(`When 'query' is provided 'type', 'tags', and 'name' arguments are ignored.`);
+    } else if (!name && !types && !tags && !query)
+      throw Error('UUID, Name, Types, Tags, and/or Query required to retrieve Entries.');
+    else if (query && (types || tags || name))
+      throw console.warn(`When 'query' is provided 'types', 'tags', and 'name' arguments are ignored.`);
     else {
       let search, negativeSearch;
       if (query) {
@@ -157,27 +179,83 @@ export class DataCollection {
           else if (typeof tags === 'string') tags = { tags: tags.split(','), matchAnyTag };
         }
 
-        search = { name, type, tags };
+        search = { name, types, tags };
       }
       if (!search && !negativeSearch) return [];
 
-      // TODO
-      if (entries) {
-        entries = DataCollection._searchEntries(entries, search, negativeSearch);
-      } else {
-        entries = DataCollection._searchEntryIndex(await DataCollection.getIndex(), search, negativeSearch);
+      if (entries) return entries.filter((entry) => this._matchEntry(entry, search, negativeSearch));
+      else return await this._search(search, negativeSearch);
+    }
+  }
+
+  static async _loadIndex(pack) {
+    const metadataDocument = await pack.getDocument(this.META_INDEX_ID);
+    const rawIndex = metadataDocument.getFlag(MODULE_ID, 'index');
+
+    const index = new Collection();
+    for (const [id, content] of Object.entries(rawIndex)) {
+      index.set(id, new Entry(id, metadataDocument.pack, content));
+    }
+
+    pack._dataStorageIndex = index;
+    return index;
+  }
+
+  static async _search(search, negativeSearch) {
+    const results = [];
+    for (const pack of game.packs) {
+      if (!pack.index.get(this.META_INDEX_ID)) continue;
+      if (!pack._dataStorageIndex) await this._loadIndex(pack);
+
+      for (const entry of pack._dataStorageIndex) {
+        if (this._matchEntry(entry, search, negativeSearch)) results.push(entry);
       }
     }
 
-    return entries;
+    return results;
   }
 
   /**
-   *
+   * Match a entry against the provided search and negativeSearch
+   * @param {Entry} entry
+   * @param {object} search
+   * @param {object} negativeSearch
+   */
+  _matchEntry(entry, search, negativeSearch) {
+    let match = true;
+
+    if (search) {
+      const { name, terms, types, tags } = search;
+      if (name && name !== entry.name) match = false;
+      else if (types && !types.includes(entry.type)) match = false;
+      else if (terms && !terms.every((t) => entry.name.toLowerCase().includes(t))) match = false;
+      else if (tags) {
+        if (tags.noTags) match = !entry.tags.length;
+        else if (tags.matchAnyTag) match = tags.tags.some((t) => entry.tags.includes(t));
+        else match = tags.tags.every((t) => entry.tags.includes(t));
+      }
+    }
+    if (match && negativeSearch) {
+      const { name, terms, types, tags } = negativeSearch;
+      if (name && name === entry.name) match = false;
+      else if (types && types.includes(entry.type)) match = false;
+      else if (terms && !terms.every((t) => !entry.name.toLowerCase().includes(t))) match = false;
+      else if (tags) {
+        if (tags.noTags) match = !!entry.tags.length;
+        else if (tags.matchAnyTag) match = tags.tags.some((t) => !entry.tags.includes(t));
+        else match = tags.tags.every((t) => !entry.tags.includes(t));
+      }
+    }
+
+    return match;
+  }
+
+  /**
+   * Returns provided UUIDs as Entries
    * @param {Array[string]|string} uuids
    * @param {object} [options]
    * @param {boolean} [options.full] Should the associated entry document be loaded?
-   * @returns
+   * @returns {Array[Entries]}
    */
   static async getEntriesFromUUID(uuids, { full = true }) {
     if (!Array.isArray(uuids)) uuids = [uuids];
@@ -193,7 +271,7 @@ export class DataCollection {
       }
     }
 
-    if (full) return this.batchLoadEntries(entries);
+    if (full) return this._batchLoadEntries(entries);
     return entries;
   }
 
@@ -202,7 +280,7 @@ export class DataCollection {
    * @param {Array[Entry]} entries to be loaded with their document
    * @returns {Array[Entry]}
    */
-  static async batchLoadEntries(entries) {
+  static async _batchLoadEntries(entries) {
     // Organize entries according to their packs
     const packToEntry = {};
     for (const entry of entries) {
@@ -223,22 +301,6 @@ export class DataCollection {
 
     return entries;
   }
-
-  // /**
-  //  * Retrieves an array of all the index entries across packs that contain Node Editor index documents
-  //  * @returns {Array[Entry]}
-  //  */
-  // static async getIndex() {
-  //   let index;
-
-  //   for (const pack of game.packs) {
-  //     if (pack.index.get(this.META_INDEX_ID)) {
-  //       index = index.concat(this.parseMetaDocument(await pack.getDocument(this.META_INDEX_ID)));
-  //     }
-  //   }
-
-  //   return index;
-  // }
 
   /**
    * Parses a search query returning terms, tags, and type found within it
