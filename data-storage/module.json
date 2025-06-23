@@ -1,0 +1,31 @@
+{
+  "id": "data-storage",
+  "title": "Data Storage",
+  "description": "Library module to assist with managing data records.",
+  "version": "1.0.0",
+  "manifest": "",
+  "download": "",
+  "compatibility": {
+    "minimum": 13,
+    "verified": 13
+  },
+  "authors": [
+    {
+      "name": "Aedif",
+      "url": "https://github.com/aedif",
+      "discord": "aedif"
+    }
+  ],
+  "esmodules": ["data-storage.js"],
+  "scripts": [],
+  "relationships": {
+    "requires": [
+      {
+        "id": "lib-wrapper",
+        "type": "module"
+      }
+    ]
+  },
+  "url": "https://github.com/Aedif/foundry-data-storage",
+  "readme": "https://github.com/Aedif/foundry-data-storage/blob/master/README.md"
+}
