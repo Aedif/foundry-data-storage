@@ -19,12 +19,33 @@ class Entry {
   }
 
   /**
-   * Override data stored within this entry with the update
+   * Update Entry
    * @param {object} update
    */
   async update(update) {
-    if (!this.document) await this.load();
-    this.document.setFlag(MODULE_ID, 'data', [update]);
+    if (foundry.utils.isEmpty(update)) return;
+
+    // Sanitize index fields
+    const indexUpdate = {};
+    for (const [k, t] of Object.entries(this.INDEX_FIELDS)) {
+      if (update[k] != null) {
+        if (foundry.utils.getType(update[k]) !== t)
+          throw Error(`Invalid index field type ${k}:${foundry.utils.getType(update[k])}`);
+        indexUpdate[k] = update[k];
+      }
+    }
+    Object.assign(this, indexUpdate);
+
+    let toUpdate = {};
+    if (update.data) foundry.utils.setProperty(toUpdate, `flags.${MODULE_ID}.data`, [update.data]);
+    if (!foundry.utils.isEmpty(indexUpdate))
+      foundry.utils.setProperty(toUpdate, `flags.${MODULE_ID}.index`, indexUpdate);
+
+    // Apply update
+    if (!foundry.utils.isEmpty(toUpdate)) {
+      if (!this.document) await this.load();
+      await this.document.update(update);
+    }
   }
 
   /**
@@ -56,6 +77,131 @@ export class DataCollection {
   // ID of the special meta document which will store the index
   static META_INDEX_ID = 'DataStorageMetaD';
 
+  // Entry fields contained stored within the index
+  static INDEX_FIELDS = { name: 'string', thumb: 'string', tags: 'Array', type: 'string', desc: 'string' };
+
+  static DEFAULT_THUMB = 'icons/svg/book.svg';
+
+  /**
+   * If a JournalEntry has been created within the Data Storage managed compendium without he use of Data Storage API
+   * a default index and empty data will be inserted here.
+   * @param {JournalEntryDocument} journalEntry
+   * @param {object} data
+   * @param {object} options
+   * @param {object} userId
+   */
+  static _preCreateJournalEntry(journalEntry, data, options, userId) {
+    if (
+      journalEntry.collection.index.get(this.META_INDEX_ID) &&
+      !foundry.utils.getProperty(data, `flags.${MODULE_ID}.index`)
+    ) {
+      foundry.utils.setProperty(data, `flags.${MODULE_ID}.index`, {
+        name: journalEntry.name,
+        thumb: this.DEFAULT_THUMB,
+        tags: [],
+        type: 'generic',
+        desc: '',
+      });
+      foundry.utils.setProperty(data, `flags.${MODULE_ID}.data`, []);
+    }
+  }
+
+  /**
+   * Handle manual creation of a journal within a Data Storage managed compendium
+   * @param {JournalEntryDocument} journalEntry
+   * @param {object} options
+   * @param {string} userId
+   * @returns
+   */
+  static _createJournalEntry(journalEntry, options, userId) {
+    const collection = journalEntry.collection;
+    if (!collection.get(this.META_INDEX_ID) || options[MODULE_ID]) return;
+
+    this._loadIndex(collection).then(() => {
+      const index = journalEntry.getFlag(MODULE_ID, 'index');
+      const entry = new Entry(journalEntry.id, collection.collection, index, journalEntry);
+      collection._dataStorageIndex.set(entry.id, entry);
+
+      collection.getDocument(this.META_INDEX_ID).then((document) => {
+        document.update({ [`flags.${MODULE_ID}.index.${entry.id}`]: index });
+      });
+    });
+  }
+
+  /**
+   * If the JournalEntry upon deletion belonged to a Data Storage managed collection, remove it from the index
+   * @param {JournalEntryDocument} journalEntry
+   * @param {object} options
+   * @param {string} userId
+   */
+  static _deleteJournalEntry(journalEntry, options, userId) {
+    if (journalEntry.collection.index.get(this.META_INDEX_ID)) {
+      journalEntry.collection._dataStorageIndex?.delete(journalEntry.id);
+      journalEntry.collection.getDocument(this.META_INDEX_ID).then((document) => {
+        document.update({ [`flags.${MODULE_ID}.index.-=${journalEntry.id}`]: null });
+      });
+    }
+  }
+
+  /**
+   * Sync JournalEntry and index names
+   * @param {*} journalEntry
+   * @param {*} change
+   * @param {*} options
+   * @param {*} userId
+   */
+  static _preUpdateJournalEntry(journalEntry, change, options, userId) {
+    if (
+      journalEntry.collection.index.get(this.META_INDEX_ID) &&
+      journalEntry.id !== this.META_INDEX_ID &&
+      ('name' in change || foundry.utils.getProperty(change, `flags.${MODULE_ID}.index.name`) != null)
+    ) {
+      if ('name' in change) foundry.utils.setProperty(change, `flags.${MODULE_ID}.index.name`, change.name);
+      else change.name = change.flags[MODULE_ID].index.name;
+    }
+  }
+
+  /**
+   * Sync metadata JournalEntry updates with _dataStorageIndex
+   * @param {JournalEntryDocument} journalEntry
+   * @param {object} change
+   * @param {object} options
+   * @param {string} userId
+   * @returns
+   */
+  static _updateJournalEntry(journalEntry, change, options, userId) {
+    if (journalEntry.collection.index.get(this.META_INDEX_ID)) {
+      // Handle entry document update
+      if (journalEntry.id !== this.META_INDEX_ID && foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`)) {
+        const indexChanges = foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`);
+
+        journalEntry.collection.getDocument(this.META_INDEX_ID).then((document) => {
+          document.update({ [`flags.${MODULE_ID}.index.${journalEntry.id}`]: indexChanges });
+        });
+      }
+
+      // Handle meta document update
+      if (
+        journalEntry.id === this.META_INDEX_ID &&
+        journalEntry.collection._dataStorageIndex &&
+        foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`)
+      ) {
+        const collection = journalEntry.collection;
+        const indexChanges = foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`);
+        for (const [id, index] of indexChanges) {
+          const entry = collection._dataStorageIndex.get(id);
+          if (entry) Object.assign(entry, index);
+          else {
+            collection._dataStorageIndex.set(
+              id,
+              new Entry(id, collection.collection, journalEntry.getFlag(MODULE_ID, 'index')[id])
+            );
+          }
+        }
+      }
+    }
+  }
+
   /**
    * Retrieves a pack, it one doesn't exist and if it's a DEFAULT_PACK; create it
    * @param {string} packId
@@ -86,7 +232,7 @@ export class DataCollection {
     const metaDoc = await compendium.getDocument(this.META_INDEX_ID);
     if (metaDoc) return metaDoc;
 
-    const documents = await compendium.createDocument(
+    const documents = await JournalEntry.createDocuments(
       [
         {
           _id: this.META_INDEX_ID,
@@ -114,11 +260,11 @@ export class DataCollection {
    * @param {string} [options.type]        Data type
    * @param {string} [options.desc]        Data description
    * @param {object} [options.data]        Data to be stored
-   * @returns {Entry}                      Fully loaded 'Entry' instance
+   * @returns
    */
   static async save({
     name = 'New Entry',
-    thumb = 'icons/svg/book.svg',
+    thumb = this.DEFAULT_THUMB,
     tags = [],
     type = 'generic',
     desc = '',
@@ -146,14 +292,13 @@ export class DataCollection {
 
     const index = { name, thumb, tags, type, desc };
 
-    const documents = await pack.createDocument([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
+    const documents = await JournalEntry.createDocuments([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
       pack: metaDocument.pack,
+      [MODULE_ID]: true,
     });
-
     const document = documents[0];
-    await metaDocument.setFlag(MODULE_ID, 'index', { [document.id]: index });
 
-    return new Entry(document.id, document.pack, index, document);
+    await metaDocument.setFlag(MODULE_ID, 'index', { [document.id]: index });
   }
 
   /**
@@ -189,6 +334,7 @@ export class DataCollection {
   }
 
   static async _loadIndex(pack) {
+    if (pack._dataStorageIndex) return;
     const metadataDocument = await pack.getDocument(this.META_INDEX_ID);
     const rawIndex = metadataDocument.getFlag(MODULE_ID, 'index');
 
@@ -221,7 +367,7 @@ export class DataCollection {
    * @param {object} search
    * @param {object} negativeSearch
    */
-  _matchEntry(entry, search, negativeSearch) {
+  static _matchEntry(entry, search, negativeSearch) {
     let match = true;
 
     if (search) {
@@ -346,3 +492,21 @@ export class DataCollection {
     return { search, negativeSearch };
   }
 }
+
+Hooks.on('init', () => {
+  globalThis.DataStorage = DataCollection;
+
+  game.settings.register(MODULE_ID, 'workingPack', {
+    scope: 'world',
+    config: false,
+    type: String,
+    default: DataCollection.DEFAULT_PACK,
+  });
+  DataCollection.workingPack = game.settings.get(MODULE_ID, 'workingPack');
+});
+
+Hooks.on('preUpdateJournalEntry', DataCollection._preUpdateJournalEntry.bind(DataCollection));
+Hooks.on('updateJournalEntry', DataCollection._updateJournalEntry.bind(DataCollection));
+Hooks.on('deleteJournalEntry', DataCollection._deleteJournalEntry.bind(DataCollection));
+Hooks.on('preCreateJournalEntry', DataCollection._preCreateJournalEntry.bind(DataCollection));
+Hooks.on('createJournalEntry', DataCollection._createJournalEntry.bind(DataCollection));
