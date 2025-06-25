@@ -287,8 +287,8 @@ export class DataStorage {
   }
 
   /**
-   * Save provided data as a document within the working compendium
-   * Name, thumb, tags, type, and desc are index information
+   * Store provided data as a document within the working compendium
+   * Name, thumb, tags, type, and desc are index fields
    * Data is the payload to be stored as a document
    * Index will also be stored as part of the document as a separate field for recovery purposes in-case the META/Index document is deleted
    * @param {object} [options]
@@ -301,7 +301,7 @@ export class DataStorage {
    * @param {object} [options.pack]        The pack the data is to be stored in
    * @returns
    */
-  static async save({
+  static async store({
     name = 'New Entry',
     thumb = this.DEFAULT_THUMB,
     tags = [],
@@ -316,6 +316,20 @@ export class DataStorage {
     if (!compendium) throw Error('Unable to retrieve pack: ', pack);
 
     const index = { name, thumb, tags, type, desc };
+
+    // Verify index fields are valid
+    for (const [k, t] of Object.entries(this.INDEX_FIELDS)) {
+      if (index[k] != null) {
+        if (foundry.utils.getType(index[k]) !== t)
+          throw Error(`Invalid index field type ${k}:${foundry.utils.getType(index[k])}`);
+      }
+    }
+
+    // Slugify tags
+    if (index.tags) {
+      index.tags = index.tags.map((t) => t.slugify({ strict: true })).filter(Boolean);
+    }
+
     const documents = await compendium.documentClass.createDocuments(
       [{ name, flags: { [MODULE_ID]: { data: [data], index } } }],
       {
@@ -364,8 +378,13 @@ export class DataStorage {
     return entries;
   }
 
+  /**
+   * Construct a collection of entries representing the index of the passed in compendium
+   * @param {Collection} pack
+   * @returns
+   */
   static async _loadIndex(pack) {
-    if (pack._dataStorageIndex) return;
+    if (pack._dataStorageIndex) return pack._dataStorageIndex;
     const metadataDocument = await pack.getDocument(this.META_INDEX_ID);
     const rawIndex = metadataDocument.getFlag(MODULE_ID, 'index');
 
@@ -378,6 +397,12 @@ export class DataStorage {
     return index;
   }
 
+  /**
+   * Search all managed packs
+   * @param {object} search
+   * @param {object} negativeSearch
+   * @returns
+   */
   static async _search(search, negativeSearch) {
     const results = [];
     for (const pack of game.packs) {
@@ -393,7 +418,7 @@ export class DataStorage {
   }
 
   /**
-   * Match a entry against the provided search and negativeSearch
+   * Match an entry against the provided search and negativeSearch
    * @param {Entry} entry
    * @param {object} search
    * @param {object} negativeSearch
@@ -431,8 +456,8 @@ export class DataStorage {
    * Returns provided UUIDs as Entries
    * @param {Array[string]|string} uuids
    * @param {object} [options]
-   * @param {boolean} [options.full] Should the associated entry document be loaded?
-   * @returns {Array[Entries]}
+   * @param {boolean} [options.full] Should the associated entry documents be immediately loaded?
+   * @returns {Array[Entry]}
    */
   static async getEntriesFromUUID(uuids, { full = true }) {
     if (!Array.isArray(uuids)) uuids = [uuids];
@@ -528,6 +553,7 @@ export class DataStorage {
   }
 }
 
+// Initialize module
 Hooks.on('init', () => {
   globalThis.DataStorage = DataStorage;
 
