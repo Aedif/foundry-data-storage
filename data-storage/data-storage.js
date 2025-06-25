@@ -4,6 +4,12 @@ const MODULE_ID = 'data-storage';
  * Entry representing one record of data
  */
 class Entry {
+  /**
+   * @param {string} id
+   * @param {string} pack
+   * @param {object} index { name, thumb, tags, type, desc };
+   * @param {JournalEntryDocument} document
+   */
   constructor(id, pack, index, document) {
     this.id = id;
     this.pack = pack;
@@ -77,13 +83,13 @@ export class DataCollection {
   // ID of the special meta document which will store the index
   static META_INDEX_ID = 'DataStorageMetaD';
 
-  // Entry fields contained stored within the index
+  // Entry fields stored within the index
   static INDEX_FIELDS = { name: 'string', thumb: 'string', tags: 'Array', type: 'string', desc: 'string' };
 
   static DEFAULT_THUMB = 'icons/svg/book.svg';
 
   /**
-   * If a JournalEntry has been created within the Data Storage managed compendium without he use of Data Storage API
+   * If a JournalEntry has been created within the Data Storage managed compendium without the use of Data Storage API
    * a default index and empty data will be inserted here.
    * @param {JournalEntryDocument} journalEntry
    * @param {object} data
@@ -107,36 +113,29 @@ export class DataCollection {
   }
 
   /**
-   * Handle manual creation of a journal within a Data Storage managed compendium
+   * Newly created JournalEntries within managed compendiums automatically update metadata document index
    * @param {JournalEntryDocument} journalEntry
    * @param {object} options
    * @param {string} userId
    * @returns
    */
   static _createJournalEntry(journalEntry, options, userId) {
-    const collection = journalEntry.collection;
-    if (!collection.get(this.META_INDEX_ID) || options[MODULE_ID]) return;
-
-    this._loadIndex(collection).then(() => {
-      const index = journalEntry.getFlag(MODULE_ID, 'index');
-      const entry = new Entry(journalEntry.id, collection.collection, index, journalEntry);
-      collection._dataStorageIndex.set(entry.id, entry);
-
-      collection.getDocument(this.META_INDEX_ID).then((document) => {
-        document.update({ [`flags.${MODULE_ID}.index.${entry.id}`]: index });
+    if (game.user.id === userId && journalEntry.collection.index.get(this.META_INDEX_ID)) {
+      journalEntry.collection.getDocument(this.META_INDEX_ID).then((metaDocument) => {
+        const index = journalEntry.getFlag(MODULE_ID, 'index');
+        metaDocument.setFlag(MODULE_ID, 'index', { [journalEntry.id]: index });
       });
-    });
+    }
   }
 
   /**
-   * If the JournalEntry upon deletion belonged to a Data Storage managed collection, remove it from the index
+   * JournalEntry deletion within managed collection automatically remove it from the metadata document index
    * @param {JournalEntryDocument} journalEntry
    * @param {object} options
    * @param {string} userId
    */
   static _deleteJournalEntry(journalEntry, options, userId) {
-    if (journalEntry.collection.index.get(this.META_INDEX_ID)) {
-      journalEntry.collection._dataStorageIndex?.delete(journalEntry.id);
+    if (game.user.id === userId && journalEntry.collection.index.get(this.META_INDEX_ID)) {
       journalEntry.collection.getDocument(this.META_INDEX_ID).then((document) => {
         document.update({ [`flags.${MODULE_ID}.index.-=${journalEntry.id}`]: null });
       });
@@ -145,10 +144,10 @@ export class DataCollection {
 
   /**
    * Sync JournalEntry and index names
-   * @param {*} journalEntry
-   * @param {*} change
-   * @param {*} options
-   * @param {*} userId
+   * @param {JournalEntryDocument} journalEntry
+   * @param {object} change
+   * @param {object} options
+   * @param {string} userId
    */
   static _preUpdateJournalEntry(journalEntry, change, options, userId) {
     if (
@@ -172,7 +171,11 @@ export class DataCollection {
   static _updateJournalEntry(journalEntry, change, options, userId) {
     if (journalEntry.collection.index.get(this.META_INDEX_ID)) {
       // Handle entry document update
-      if (journalEntry.id !== this.META_INDEX_ID && foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`)) {
+      if (
+        journalEntry.id !== this.META_INDEX_ID &&
+        game.user.id === userId &&
+        foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`)
+      ) {
         const indexChanges = foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`);
 
         journalEntry.collection.getDocument(this.META_INDEX_ID).then((document) => {
@@ -188,7 +191,12 @@ export class DataCollection {
       ) {
         const collection = journalEntry.collection;
         const indexChanges = foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`);
-        for (const [id, index] of indexChanges) {
+        for (const [id, index] of Object.entries(indexChanges)) {
+          if (id.startsWith('-=')) {
+            collection._dataStorageIndex.delete(id.substring(2));
+            continue;
+          }
+
           const entry = collection._dataStorageIndex.get(id);
           if (entry) Object.assign(entry, index);
           else {
@@ -292,13 +300,10 @@ export class DataCollection {
 
     const index = { name, thumb, tags, type, desc };
 
-    const documents = await JournalEntry.createDocuments([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
+    await JournalEntry.createDocuments([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
       pack: metaDocument.pack,
       [MODULE_ID]: true,
     });
-    const document = documents[0];
-
-    await metaDocument.setFlag(MODULE_ID, 'index', { [document.id]: index });
   }
 
   /**
