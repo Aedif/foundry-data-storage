@@ -8,7 +8,7 @@ class Entry {
    * @param {string} id
    * @param {string} pack
    * @param {object} index { name, thumb, tags, type, desc };
-   * @param {JournalEntryDocument} document
+   * @param {Document} document
    */
   constructor(id, pack, index, document) {
     this.id = id;
@@ -18,10 +18,10 @@ class Entry {
   }
 
   /**
-   * UUID of the underlying JournalEntry document
+   * UUID of the underlying Document
    */
   get uuid() {
-    return `Compendium.` + this.pack + '.JournalEntry.' + this.id;
+    return `Compendium.${this.pack}.${game.packs.get(this.pack).documentClass.name}.${this.id}`;
   }
 
   /**
@@ -65,7 +65,7 @@ class Entry {
 
   /**
    * Load the document
-   * @returns {JournalEntryDocument}
+   * @returns {Document}
    */
   async load() {
     if (!this.document) this.document = await fromUuid(this.uuid);
@@ -88,21 +88,39 @@ export class DataCollection {
 
   static DEFAULT_THUMB = 'icons/svg/book.svg';
 
+  static _init() {
+    DataCollection.workingPack = game.settings.get(MODULE_ID, 'workingPack');
+
+    const managedDocumentTypes = game.settings.get(MODULE_ID, 'managedDocumentTypes');
+    for (const documentType of managedDocumentTypes) {
+      Hooks.on(`preUpdate${documentType}`, this._preUpdate.bind(this));
+      Hooks.on(`update${documentType}`, this._update.bind(this));
+      Hooks.on(`delete${documentType}`, this._delete.bind(this));
+      Hooks.on(`preCreate${documentType}`, this._preCreate.bind(this));
+      Hooks.on(`create${documentType}`, this._create.bind(this));
+    }
+  }
+
   /**
-   * If a JournalEntry has been created within the Data Storage managed compendium without the use of Data Storage API
-   * a default index and empty data will be inserted here.
-   * @param {JournalEntryDocument} journalEntry
+   * =============================================================================
+   * =================================== Hooks ===================================
+   * =============================================================================
+   */
+
+  /**
+   * If a Document has been created within a managed compendium without the use of Data Storage API a default index and empty data will be inserted here.
+   * @param {Document} document
    * @param {object} data
    * @param {object} options
    * @param {object} userId
    */
-  static _preCreateJournalEntry(journalEntry, data, options, userId) {
+  static _preCreate(document, data, options, userId) {
     if (
-      journalEntry.collection.index.get(this.META_INDEX_ID) &&
+      document.collection.index.get(this.META_INDEX_ID) &&
       !foundry.utils.getProperty(data, `flags.${MODULE_ID}.index`)
     ) {
       foundry.utils.setProperty(data, `flags.${MODULE_ID}.index`, {
-        name: journalEntry.name,
+        name: document.name,
         thumb: this.DEFAULT_THUMB,
         tags: [],
         type: 'generic',
@@ -113,46 +131,46 @@ export class DataCollection {
   }
 
   /**
-   * Newly created JournalEntries within managed compendiums automatically update metadata document index
-   * @param {JournalEntryDocument} journalEntry
+   * Newly created documents within managed compendiums automatically update metadata document index
+   * @param {Document} document
    * @param {object} options
    * @param {string} userId
    * @returns
    */
-  static _createJournalEntry(journalEntry, options, userId) {
-    if (game.user.id === userId && journalEntry.collection.index.get(this.META_INDEX_ID)) {
-      journalEntry.collection.getDocument(this.META_INDEX_ID).then((metaDocument) => {
-        const index = journalEntry.getFlag(MODULE_ID, 'index');
-        metaDocument.setFlag(MODULE_ID, 'index', { [journalEntry.id]: index });
+  static _create(document, options, userId) {
+    if (game.user.id === userId && document.collection.index.get(this.META_INDEX_ID)) {
+      document.collection.getDocument(this.META_INDEX_ID).then((metaDocument) => {
+        const index = document.getFlag(MODULE_ID, 'index');
+        metaDocument.setFlag(MODULE_ID, 'index', { [document.id]: index });
       });
     }
   }
 
   /**
-   * JournalEntry deletion within managed collection automatically remove it from the metadata document index
-   * @param {JournalEntryDocument} journalEntry
+   * Document deletion within managed collection automatically remove it from the metadata document index
+   * @param {Document} document
    * @param {object} options
    * @param {string} userId
    */
-  static _deleteJournalEntry(journalEntry, options, userId) {
-    if (game.user.id === userId && journalEntry.collection.index.get(this.META_INDEX_ID)) {
-      journalEntry.collection.getDocument(this.META_INDEX_ID).then((document) => {
-        document.update({ [`flags.${MODULE_ID}.index.-=${journalEntry.id}`]: null });
+  static _delete(document, options, userId) {
+    if (game.user.id === userId && document.collection.index.get(this.META_INDEX_ID)) {
+      document.collection.getDocument(this.META_INDEX_ID).then((metaDocument) => {
+        metaDocument.update({ [`flags.${MODULE_ID}.index.-=${document.id}`]: null });
       });
     }
   }
 
   /**
-   * Sync JournalEntry and index names
-   * @param {JournalEntryDocument} journalEntry
+   * Sync Document and index names
+   * @param {Document} document
    * @param {object} change
    * @param {object} options
    * @param {string} userId
    */
-  static _preUpdateJournalEntry(journalEntry, change, options, userId) {
+  static _preUpdate(document, change, options, userId) {
     if (
-      journalEntry.collection.index.get(this.META_INDEX_ID) &&
-      journalEntry.id !== this.META_INDEX_ID &&
+      document.collection.index.get(this.META_INDEX_ID) &&
+      document.id !== this.META_INDEX_ID &&
       ('name' in change || foundry.utils.getProperty(change, `flags.${MODULE_ID}.index.name`) != null)
     ) {
       if ('name' in change) foundry.utils.setProperty(change, `flags.${MODULE_ID}.index.name`, change.name);
@@ -161,35 +179,35 @@ export class DataCollection {
   }
 
   /**
-   * Sync metadata JournalEntry updates with _dataStorageIndex
-   * @param {JournalEntryDocument} journalEntry
+   * Sync metadata Document updates with _dataStorageIndex
+   * @param {Document} document
    * @param {object} change
    * @param {object} options
    * @param {string} userId
    * @returns
    */
-  static _updateJournalEntry(journalEntry, change, options, userId) {
-    if (journalEntry.collection.index.get(this.META_INDEX_ID)) {
+  static _update(document, change, options, userId) {
+    if (document.collection.index.get(this.META_INDEX_ID)) {
       // Handle entry document update
       if (
-        journalEntry.id !== this.META_INDEX_ID &&
+        document.id !== this.META_INDEX_ID &&
         game.user.id === userId &&
         foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`)
       ) {
         const indexChanges = foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`);
 
-        journalEntry.collection.getDocument(this.META_INDEX_ID).then((document) => {
-          document.update({ [`flags.${MODULE_ID}.index.${journalEntry.id}`]: indexChanges });
+        document.collection.getDocument(this.META_INDEX_ID).then((metaDocument) => {
+          metaDocument.update({ [`flags.${MODULE_ID}.index.${document.id}`]: indexChanges });
         });
       }
 
       // Handle meta document update
       if (
-        journalEntry.id === this.META_INDEX_ID &&
-        journalEntry.collection._dataStorageIndex &&
+        document.id === this.META_INDEX_ID &&
+        document.collection._dataStorageIndex &&
         foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`)
       ) {
-        const collection = journalEntry.collection;
+        const collection = document.collection;
         const indexChanges = foundry.utils.getProperty(change, `flags.${MODULE_ID}.index`);
         for (const [id, index] of Object.entries(indexChanges)) {
           if (id.startsWith('-=')) {
@@ -202,13 +220,15 @@ export class DataCollection {
           else {
             collection._dataStorageIndex.set(
               id,
-              new Entry(id, collection.collection, journalEntry.getFlag(MODULE_ID, 'index')[id])
+              new Entry(id, collection.collection, document.getFlag(MODULE_ID, 'index')[id])
             );
           }
         }
       }
     }
   }
+
+  // ======================= end of Hooks ================================
 
   /**
    * Retrieves a pack, it one doesn't exist and if it's a DEFAULT_PACK; create it
@@ -218,9 +238,12 @@ export class DataCollection {
   static async _initCompendium(packId) {
     let compendium = game.packs.get(packId);
     if (!compendium && packId === this.DEFAULT_PACK) {
+      // Use any managed document type
+      const type = game.settings.get(MODULE_ID, 'managedDocumentTypes')[0];
+      console.log(type);
       compendium = await CompendiumCollection.createCompendium({
         label: 'Data Storage',
-        type: 'JournalEntry',
+        type,
         packageType: 'world',
       });
 
@@ -236,11 +259,11 @@ export class DataCollection {
    * @returns
    */
   static async _initMetaDocument(packId) {
-    const compendium = game.packs.get(packId);
-    const metaDoc = await compendium.getDocument(this.META_INDEX_ID);
+    const pack = game.packs.get(packId);
+    const metaDoc = await pack.getDocument(this.META_INDEX_ID);
     if (metaDoc) return metaDoc;
 
-    const documents = await JournalEntry.createDocuments(
+    const documents = await pack.documentClass.createDocuments(
       [
         {
           _id: this.META_INDEX_ID,
@@ -300,7 +323,7 @@ export class DataCollection {
 
     const index = { name, thumb, tags, type, desc };
 
-    await JournalEntry.createDocuments([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
+    await pack.documentClass.createDocuments([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
       pack: metaDocument.pack,
       [MODULE_ID]: true,
     });
@@ -507,11 +530,14 @@ Hooks.on('init', () => {
     type: String,
     default: DataCollection.DEFAULT_PACK,
   });
-  DataCollection.workingPack = game.settings.get(MODULE_ID, 'workingPack');
-});
 
-Hooks.on('preUpdateJournalEntry', DataCollection._preUpdateJournalEntry.bind(DataCollection));
-Hooks.on('updateJournalEntry', DataCollection._updateJournalEntry.bind(DataCollection));
-Hooks.on('deleteJournalEntry', DataCollection._deleteJournalEntry.bind(DataCollection));
-Hooks.on('preCreateJournalEntry', DataCollection._preCreateJournalEntry.bind(DataCollection));
-Hooks.on('createJournalEntry', DataCollection._createJournalEntry.bind(DataCollection));
+  // CONST.COMPENDIUM_DOCUMENT_TYPES
+  game.settings.register(MODULE_ID, 'managedDocumentTypes', {
+    scope: 'world',
+    config: false,
+    type: Array,
+    default: ['JournalEntry'],
+  });
+
+  DataCollection._init();
+});
