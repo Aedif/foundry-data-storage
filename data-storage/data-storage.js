@@ -75,8 +75,6 @@ class Entry {
 }
 
 export class DataCollection {
-  static workingPack;
-
   // Default pack the data records will be stored within
   static DEFAULT_PACK = 'world.data-storage';
 
@@ -89,8 +87,6 @@ export class DataCollection {
   static DEFAULT_THUMB = 'icons/svg/book.svg';
 
   static _init() {
-    DataCollection.workingPack = game.settings.get(MODULE_ID, 'workingPack');
-
     const managedDocumentTypes = game.settings.get(MODULE_ID, 'managedDocumentTypes');
     for (const documentType of managedDocumentTypes) {
       Hooks.on(`preUpdate${documentType}`, this._preUpdate.bind(this));
@@ -99,6 +95,15 @@ export class DataCollection {
       Hooks.on(`preCreate${documentType}`, this._preCreate.bind(this));
       Hooks.on(`create${documentType}`, this._create.bind(this));
     }
+
+    Hooks.on('activateCompendiumDirectory', (directory) => {
+      if (game.settings.get(MODULE_ID, 'hideManagedPacks'))
+        game.packs
+          .filter((p) => p.index.get(DataCollection.META_INDEX_ID))
+          .forEach((pack) => {
+            directory.element.querySelector(`[data-pack="${pack.collection}"]`)?.setAttribute('hidden', true);
+          });
+    });
   }
 
   /**
@@ -231,52 +236,44 @@ export class DataCollection {
   // ======================= end of Hooks ================================
 
   /**
-   * Retrieves a pack, it one doesn't exist and if it's a DEFAULT_PACK; create it
+   * Retrieves a compendium and create a metadata document within it
+   * If it's a DEFAULT_PACK and does not exist it will be created
    * @param {string} packId
    * @returns
    */
   static async _initCompendium(packId) {
+    // Get/Create compendium
     let compendium = game.packs.get(packId);
     if (!compendium && packId === this.DEFAULT_PACK) {
       // Use any managed document type
       const type = game.settings.get(MODULE_ID, 'managedDocumentTypes')[0];
-      console.log(type);
       compendium = await CompendiumCollection.createCompendium({
         label: 'Data Storage',
         type,
         packageType: 'world',
       });
-
-      await this._initMetaDocument(packId);
     }
 
-    return compendium;
-  }
-
-  /**
-   * Initializes a special metadata document which will contain the index of all the records
-   * @param {string} packId
-   * @returns
-   */
-  static async _initMetaDocument(packId) {
-    const pack = game.packs.get(packId);
-    const metaDoc = await pack.getDocument(this.META_INDEX_ID);
-    if (metaDoc) return metaDoc;
-
-    const documents = await pack.documentClass.createDocuments(
-      [
+    // Get/Create metadata document
+    let metadataDocument = await compendium?.getDocument(this.META_INDEX_ID);
+    if (compendium && !metadataDocument) {
+      const documents = await pack.documentClass.createDocuments(
+        [
+          {
+            _id: this.META_INDEX_ID,
+            name: '!!! METADATA: DO NOT DELETE !!!',
+            flags: { [MODULE_ID]: { index: {} } },
+          },
+        ],
         {
-          _id: this.META_INDEX_ID,
-          name: '!!! METADATA: DO NOT DELETE !!!',
-          flags: { [MODULE_ID]: { index: {} } },
-        },
-      ],
-      {
-        pack: packId,
-        keepId: true,
-      }
-    );
-    return documents[0];
+          pack: packId,
+          keepId: true,
+        }
+      );
+      metadataDocument = documents[0];
+    }
+
+    return { compendium, metadataDocument };
   }
 
   /**
@@ -291,40 +288,26 @@ export class DataCollection {
    * @param {string} [options.type]        Data type
    * @param {string} [options.desc]        Data description
    * @param {object} [options.data]        Data to be stored
+   * @param {object} [options.pack]        The pack the data is to be stored in
    * @returns
    */
   static async save({
     name = 'New Entry',
     thumb = this.DEFAULT_THUMB,
     tags = [],
-    type = 'generic',
+    type = 'data-storage-generic',
     desc = '',
     data,
+    pack = this.DEFAULT_PACK,
   } = {}) {
     if (foundry.utils.isEmpty(data)) throw Error('No data provided for storage.');
 
-    let metaDocument;
-    let pack;
-
-    try {
-      pack = await this._initCompendium(this.workingPack);
-      if (!pack) throw Error('Unable to retrieve working pack: ', this.workingPack);
-      metaDocument = await this._initMetaDocument(this.workingPack);
-    } catch (e) {
-      // Fail-safe. Return back to DEFAULT_PACK
-      console.log(e);
-      console.log(`FAILED TO LOAD WORKING PACK {${this.workingPack}}`);
-      console.log('RETURNING TO DEFAULT');
-      await game.settings.set(MODULE_ID, 'workingPack', this.DEFAULT_PACK);
-      this.workingPack = this.DEFAULT_PACK;
-      pack = await this._initCompendium(this.workingPack);
-      metaDocument = await this._initMetaDocument(this.workingPack);
-    }
+    const { compendium, metadataDocument } = await this._initCompendium(pack);
+    if (!compendium) throw Error('Unable to retrieve pack: ', pack);
 
     const index = { name, thumb, tags, type, desc };
-
-    await pack.documentClass.createDocuments([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
-      pack: metaDocument.pack,
+    await compendium.documentClass.createDocuments([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
+      pack: metadataDocument.pack,
       [MODULE_ID]: true,
     });
   }
@@ -524,19 +507,23 @@ export class DataCollection {
 Hooks.on('init', () => {
   globalThis.DataStorage = DataCollection;
 
-  game.settings.register(MODULE_ID, 'workingPack', {
-    scope: 'world',
-    config: false,
-    type: String,
-    default: DataCollection.DEFAULT_PACK,
-  });
-
-  // CONST.COMPENDIUM_DOCUMENT_TYPES
   game.settings.register(MODULE_ID, 'managedDocumentTypes', {
     scope: 'world',
     config: false,
     type: Array,
-    default: ['JournalEntry'],
+    default: ['JournalEntry'], // CONST.COMPENDIUM_DOCUMENT_TYPES
+  });
+
+  game.settings.register(MODULE_ID, 'hideManagedPacks', {
+    name: 'data-storage.hideManagedPacks.name',
+    hint: 'data-storage.hideManagedPacks.hint',
+    scope: 'world',
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: () => {
+      foundry.applications.instances.get(foundry.applications.sidebar.tabs.CompendiumDirectory.tabName)?.render(true);
+    },
   });
 
   DataCollection._init();

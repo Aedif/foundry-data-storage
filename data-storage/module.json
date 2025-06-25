@@ -1,7 +1,7 @@
 {
   "id": "data-storage",
   "title": "Data Storage",
-  "description": "Library module to assist with managing data records.",
+  "description": "Library module for managing documents as data records.",
   "version": "1.0.0",
   "manifest": "",
   "download": "",
@@ -26,6 +26,13 @@
       }
     ]
   },
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
   "url": "https://github.com/Aedif/foundry-data-storage",
   "readme": "https://github.com/Aedif/foundry-data-storage/blob/master/README.md"
 }
