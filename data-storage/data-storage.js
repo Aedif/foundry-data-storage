@@ -58,9 +58,12 @@ class Entry {
    * Retrieve data stored within the document
    * @returns {object}
    */
-  async data() {
-    if (!this.document) await this.load();
-    return this.document.getFlag(MODULE_ID, 'data')[0];
+  data() {
+    if (!this.document)
+      return this.load().then((document) => {
+        return document.getFlag(MODULE_ID, 'data')[0];
+      });
+    else return this.document.getFlag(MODULE_ID, 'data')[0];
   }
 
   /**
@@ -74,7 +77,7 @@ class Entry {
   }
 }
 
-export class DataCollection {
+export class DataStorage {
   // Default pack the data records will be stored within
   static DEFAULT_PACK = 'world.data-storage';
 
@@ -99,7 +102,7 @@ export class DataCollection {
     Hooks.on('activateCompendiumDirectory', (directory) => {
       if (game.settings.get(MODULE_ID, 'hideManagedPacks'))
         game.packs
-          .filter((p) => p.index.get(DataCollection.META_INDEX_ID))
+          .filter((p) => p.index.get(this.META_INDEX_ID))
           .forEach((pack) => {
             directory.element.querySelector(`[data-pack="${pack.collection}"]`)?.setAttribute('hidden', true);
           });
@@ -247,29 +250,36 @@ export class DataCollection {
     if (!compendium && packId === this.DEFAULT_PACK) {
       // Use any managed document type
       const type = game.settings.get(MODULE_ID, 'managedDocumentTypes')[0];
-      compendium = await CompendiumCollection.createCompendium({
-        label: 'Data Storage',
-        type,
-        packageType: 'world',
-      });
+
+      if (!this._creatingDefaultCompendium)
+        this._creatingDefaultCompendium = CompendiumCollection.createCompendium({
+          label: 'Data Storage',
+          type,
+          packageType: 'world',
+        });
+
+      compendium = await this._creatingDefaultCompendium;
     }
 
     // Get/Create metadata document
     let metadataDocument = await compendium?.getDocument(this.META_INDEX_ID);
     if (compendium && !metadataDocument) {
-      const documents = await pack.documentClass.createDocuments(
-        [
+      if (!compendium._creatingMetadataDocument)
+        compendium._creatingMetadataDocument = compendium.documentClass.createDocuments(
+          [
+            {
+              _id: this.META_INDEX_ID,
+              name: '!!! METADATA: DO NOT DELETE !!!',
+              flags: { [MODULE_ID]: { index: {} } },
+            },
+          ],
           {
-            _id: this.META_INDEX_ID,
-            name: '!!! METADATA: DO NOT DELETE !!!',
-            flags: { [MODULE_ID]: { index: {} } },
-          },
-        ],
-        {
-          pack: packId,
-          keepId: true,
-        }
-      );
+            pack: packId,
+            keepId: true,
+          }
+        );
+
+      const documents = await compendium._creatingMetadataDocument;
       metadataDocument = documents[0];
     }
 
@@ -306,10 +316,16 @@ export class DataCollection {
     if (!compendium) throw Error('Unable to retrieve pack: ', pack);
 
     const index = { name, thumb, tags, type, desc };
-    await compendium.documentClass.createDocuments([{ name, flags: { [MODULE_ID]: { data: [data], index } } }], {
-      pack: metadataDocument.pack,
-      [MODULE_ID]: true,
-    });
+    const documents = await compendium.documentClass.createDocuments(
+      [{ name, flags: { [MODULE_ID]: { data: [data], index } } }],
+      {
+        pack: metadataDocument.pack,
+        [MODULE_ID]: true,
+      }
+    );
+    const document = documents[0];
+
+    return new Entry(document.id, pack, index, document);
   }
 
   /**
@@ -339,9 +355,13 @@ export class DataCollection {
       }
       if (!search && !negativeSearch) return [];
 
-      if (entries) return entries.filter((entry) => this._matchEntry(entry, search, negativeSearch));
-      else return await this._search(search, negativeSearch);
+      if (entries) entries = entries.filter((entry) => this._matchEntry(entry, search, negativeSearch));
+      else entries = await this._search(search, negativeSearch);
+
+      if (full) await this._batchLoadEntries(results);
     }
+
+    return entries;
   }
 
   static async _loadIndex(pack) {
@@ -420,11 +440,15 @@ export class DataCollection {
 
     for (const uuid of uuids) {
       let { collection, documentId } = foundry.utils.parseUuid(uuid);
+      if (!collection) {
+        console.warn('Invalid UUID: ', uuid);
+        continue;
+      }
       const index = collection.index.get(documentId);
 
       if (index) {
-        const metaIndex = (await collection.getDocument(META_INDEX_ID))?.getFlag(MODULE_ID, 'index');
-        entries.push(new Entry(index._id, collection.collection, metaIndex[index._id]));
+        if (!collection._dataStorageIndex) await this._loadIndex(collection);
+        entries.push(collection._dataStorageIndex.get(documentId));
       }
     }
 
@@ -505,7 +529,7 @@ export class DataCollection {
 }
 
 Hooks.on('init', () => {
-  globalThis.DataStorage = DataCollection;
+  globalThis.DataStorage = DataStorage;
 
   game.settings.register(MODULE_ID, 'managedDocumentTypes', {
     scope: 'world',
@@ -526,5 +550,5 @@ Hooks.on('init', () => {
     },
   });
 
-  DataCollection._init();
+  DataStorage._init();
 });
