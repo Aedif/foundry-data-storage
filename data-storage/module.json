@@ -33,6 +33,7 @@
       "path": "lang/en.json"
     }
   ],
+  "styles": ["styles/data-browser.css"],
   "url": "https://github.com/Aedif/foundry-data-storage",
   "readme": "https://github.com/Aedif/foundry-data-storage/blob/master/README.md"
 }

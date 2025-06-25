@@ -75,6 +75,14 @@ class Entry {
     if (!this.document) throw Error(`Unable to load Entry: ${this.uuid}`);
     return this.document;
   }
+
+  /**
+   * Delete underlying document
+   * @returns
+   */
+  async delete() {
+    return game.packs.get(this.pack)?.documentClass.deleteDocuments([this.id], { pack: this.pack });
+  }
 }
 
 export class DataStorage {
@@ -107,6 +115,10 @@ export class DataStorage {
             directory.element.querySelector(`[data-pack="${pack.collection}"]`)?.setAttribute('hidden', true);
           });
     });
+  }
+
+  static openBrowser() {
+    import('./app/data-browser.js').then((module) => new module.default().render(true));
   }
 
   /**

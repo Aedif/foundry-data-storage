@@ -1,0 +1,17 @@
+.data-browser .type {
+    font-size: smaller; 
+    color: darkgoldenrod;
+}
+
+.data-browser .delete {
+    position: absolute;
+    right: 9px;
+    top: 15px;
+    color: darkred;
+}
+
+.data-browser .tag {
+    border: 1px solid darkorange;
+    border-radius: 5px;
+    padding: 2px;
+}

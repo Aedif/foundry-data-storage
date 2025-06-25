@@ -1,0 +1,18 @@
+<div>
+    <fieldset>
+        <legend>Types</legend>
+        <div>
+            {{#each types}}
+            <a class="tag" data-action="selectType">{{this}}</a>
+            {{/each}}
+        </div>
+    </fieldset>
+    <fieldset>
+        <legend>Tags</legend>
+        <div>
+            {{#each tags}}
+            <a class="tag" data-action="selectTag">{{this}}</a>
+            {{/each}}
+        </div>
+    </fieldset>
+</div>

@@ -1,0 +1,7 @@
+<div class="wrapper" style="overflow-y: auto;">
+    <ol class="directory-list plain">
+        {{#each entries}}
+        {{> (lookup @root "entryPartial") }}
+        {{/each}}
+    </ol>
+</div>
