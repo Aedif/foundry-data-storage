@@ -125,8 +125,8 @@ export default class DataBrowser extends foundry.applications.api.HandlebarsAppl
 
   static async _onDelete(event) {
     const element = event.target.closest('.entry');
-    const entries = await DataStorage.retrieve({ uuid: element.dataset.entryUuid });
-    entries[0].delete();
+    const entry = await DataStorage.retrieve({ uuid: element.dataset.entryUuid });
+    entry.delete();
     element.remove();
   }
 }

@@ -1,3 +1,5 @@
+import DataBrowser from './app/data-browser.js';
+
 const MODULE_ID = 'data-storage';
 
 /**
@@ -33,7 +35,7 @@ class Entry {
 
     // Sanitize index fields
     const indexUpdate = {};
-    for (const [k, t] of Object.entries(this.INDEX_FIELDS)) {
+    for (const [k, t] of Object.entries(DataStorage.INDEX_FIELDS)) {
       if (update[k] != null) {
         if (foundry.utils.getType(update[k]) !== t)
           throw Error(`Invalid index field type ${k}:${foundry.utils.getType(update[k])}`);
@@ -50,7 +52,7 @@ class Entry {
     // Apply update
     if (!foundry.utils.isEmpty(toUpdate)) {
       if (!this.document) await this.load();
-      await this.document.update(update);
+      await this.document.update(toUpdate);
     }
   }
 
@@ -81,6 +83,11 @@ class Entry {
    * @returns
    */
   async delete() {
+    if (!game.user.isGM) {
+      if (DataStorage._playerStorePermission) return DataStorage.playerDelete(this.pack, this.id);
+      else return null;
+    }
+
     return game.packs.get(this.pack)?.documentClass.deleteDocuments([this.id], { pack: this.pack });
   }
 }
@@ -96,6 +103,9 @@ export class DataStorage {
   static INDEX_FIELDS = { name: 'string', thumb: 'string', tags: 'Array', type: 'string', desc: 'string' };
 
   static DEFAULT_THUMB = 'icons/svg/book.svg';
+
+  // Unresolved player store/delete requests
+  static _requests = {};
 
   static _init() {
     const managedDocumentTypes = game.settings.get(MODULE_ID, 'managedDocumentTypes');
@@ -115,10 +125,15 @@ export class DataStorage {
             directory.element.querySelector(`[data-pack="${pack.collection}"]`)?.setAttribute('hidden', true);
           });
     });
+
+    this._playerStorePermission = game.settings.get(MODULE_ID, 'playerStorePermission');
   }
 
+  /**
+   * Open application to view and delete records
+   */
   static openBrowser() {
-    import('./app/data-browser.js').then((module) => new module.default().render(true));
+    new DataBrowser().render(true);
   }
 
   /**
@@ -136,7 +151,7 @@ export class DataStorage {
    */
   static _preCreate(document, data, options, userId) {
     if (
-      document.collection.index.get(this.META_INDEX_ID) &&
+      document.collection.index?.get(this.META_INDEX_ID) &&
       !foundry.utils.getProperty(data, `flags.${MODULE_ID}.index`)
     ) {
       foundry.utils.setProperty(data, `flags.${MODULE_ID}.index`, {
@@ -158,7 +173,7 @@ export class DataStorage {
    * @returns
    */
   static _create(document, options, userId) {
-    if (game.user.id === userId && document.collection.index.get(this.META_INDEX_ID)) {
+    if (game.user.id === userId && document.collection.index?.get(this.META_INDEX_ID)) {
       document.collection.getDocument(this.META_INDEX_ID).then((metaDocument) => {
         const index = document.getFlag(MODULE_ID, 'index');
         metaDocument.setFlag(MODULE_ID, 'index', { [document.id]: index });
@@ -173,7 +188,7 @@ export class DataStorage {
    * @param {string} userId
    */
   static _delete(document, options, userId) {
-    if (game.user.id === userId && document.collection.index.get(this.META_INDEX_ID)) {
+    if (game.user.id === userId && document.collection.index?.get(this.META_INDEX_ID)) {
       document.collection.getDocument(this.META_INDEX_ID).then((metaDocument) => {
         metaDocument.update({ [`flags.${MODULE_ID}.index.-=${document.id}`]: null });
       });
@@ -189,7 +204,7 @@ export class DataStorage {
    */
   static _preUpdate(document, change, options, userId) {
     if (
-      document.collection.index.get(this.META_INDEX_ID) &&
+      document.collection.index?.get(this.META_INDEX_ID) &&
       document.id !== this.META_INDEX_ID &&
       ('name' in change || foundry.utils.getProperty(change, `flags.${MODULE_ID}.index.name`) != null)
     ) {
@@ -207,7 +222,7 @@ export class DataStorage {
    * @returns
    */
   static _update(document, change, options, userId) {
-    if (document.collection.index.get(this.META_INDEX_ID)) {
+    if (document.collection.index?.get(this.META_INDEX_ID)) {
       // Handle entry document update
       if (
         document.id !== this.META_INDEX_ID &&
@@ -313,19 +328,26 @@ export class DataStorage {
    * @param {object} [options.pack]        The pack the data is to be stored in
    * @returns
    */
-  static async store({
-    name = 'New Entry',
-    thumb = this.DEFAULT_THUMB,
-    tags = [],
-    type = 'data-storage-generic',
-    desc = '',
-    data,
-    pack = this.DEFAULT_PACK,
-  } = {}) {
-    if (foundry.utils.isEmpty(data)) throw Error('No data provided for storage.');
+  static async store(options = {}) {
+    if (foundry.utils.isEmpty(options.data)) throw Error('No data provided for storage.');
+    if (!game.user.isGM) {
+      if (this._playerStorePermission) return this.playerStore(options);
+      else return null;
+    }
+
+    const {
+      name = 'New Entry',
+      thumb = this.DEFAULT_THUMB,
+      tags = [],
+      type = 'data-storage-generic',
+      desc = '',
+      data,
+      pack = this.DEFAULT_PACK,
+    } = options;
 
     const { compendium, metadataDocument } = await this._initCompendium(pack);
     if (!compendium) throw Error('Unable to retrieve pack: ', pack);
+    else if (compendium.locked) throw Error('Unable to store data within a locked compendium.');
 
     const index = { name, thumb, tags, type, desc };
 
@@ -355,6 +377,80 @@ export class DataStorage {
   }
 
   /**
+   * Handle player request to store data
+   * @param {object} options DataStorage.store(...)
+   * @returns
+   */
+  static playerStore(options = {}) {
+    const requestId = foundry.utils.randomID();
+    const message = {
+      handlerName: 'store',
+      args: { options, requestId },
+      type: 'PLAYER_REQUEST',
+    };
+    game.socket.emit(`module.${MODULE_ID}`, message);
+
+    // Self resolve in 6s if no response from a GM is received
+    setTimeout(() => {
+      this._requests[requestId]?.(null);
+      delete this._requests[requestId];
+    }, 6000);
+
+    return new Promise((resolve) => {
+      this._requests[requestId] = resolve;
+    });
+  }
+
+  /**
+   * Handle response to playerStore(...) request
+   * @param {object} options
+   * @returns
+   */
+  static async _resolvePlayerStoreRequest({ requestId, documentId, pack } = {}) {
+    if (!this._requests[requestId]) return;
+    const document = await game.packs.get(pack).getDocument(documentId);
+    this._requests[requestId](new Entry(documentId, pack, document.getFlag(MODULE_ID, 'index'), document));
+    delete this._requests[requestId];
+  }
+
+  /**
+   * Handle player request to delete an Entry
+   * @param {string} pack
+   * @param {string} id
+   * @returns
+   */
+  static playerDelete(pack, id) {
+    const requestId = foundry.utils.randomID();
+    const message = {
+      handlerName: 'delete',
+      args: { pack, id, requestId },
+      type: 'PLAYER_REQUEST',
+    };
+    game.socket.emit(`module.${MODULE_ID}`, message);
+
+    // Self resolve in 6s if no response from a GM is received
+    setTimeout(() => {
+      this._requests[requestId]?.(null);
+      delete this._requests[requestId];
+    }, 6000);
+
+    return new Promise((resolve) => {
+      this._requests[requestId] = resolve;
+    });
+  }
+
+  /**
+   * Handle response to playerDelete(...) request
+   * @param {object} options
+   * @returns
+   */
+  static async _resolvePlayerDeleteRequest({ requestId } = {}) {
+    if (!this._requests[requestId]) return;
+    this._requests[requestId]();
+    delete this._requests[requestId];
+  }
+
+  /**
    * Retrieves entries matching the provided criteria.
    * @param {*} param0
    * @returns
@@ -363,6 +459,9 @@ export class DataStorage {
     if (uuid) {
       const uuids = Array.isArray(uuid) ? uuid : [uuid];
       entries = await this.getEntriesFromUUID(uuids, { full });
+
+      // If a single UUID has been requested lets return it as an Entry not an array
+      if (entries && !Array.isArray(uuid)) return entries[0];
     } else if (!name && !types && !tags && !query)
       throw Error('UUID, Name, Types, Tags, and/or Query required to retrieve Entries.');
     else if (query && (types || tags || name))
@@ -588,5 +687,65 @@ Hooks.on('init', () => {
     },
   });
 
+  game.settings.register(MODULE_ID, 'playerStorePermission', {
+    name: 'data-storage.playerStorePermission.name',
+    hint: 'data-storage.playerStorePermission.hint',
+    scope: 'world',
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: (val) => {
+      DataStorage._playerStorePermission = val;
+    },
+  });
+
+  game.settings.registerMenu(MODULE_ID, 'browser', {
+    name: 'data-storage.browser',
+    icon: 'fa-solid fa-scroll',
+    type: DataBrowser,
+    restricted: true,
+  });
+
   DataStorage._init();
+
+  // Handle broadcasts for player store and delete requests
+  game.socket?.on(`module.${MODULE_ID}`, async (message) => {
+    const args = message.args;
+
+    if (message.type === 'RESOLVE') {
+      if (message.handlerName === 'store') this._resolvePlayerStoreRequest(args);
+      else if (message.handlerName === 'delete') this._resolvePlayerDeleteRequest(args);
+    } else {
+      if (
+        game.users.filter((u) => u.active && u.isGM).sort((a, b) => b.role - a.role || a.id.compare(b.id))[0]?.isSelf
+      ) {
+        if (message.handlerName === 'store') {
+          const entry = await DataStorage.store(args.options);
+
+          const message = {
+            handlerName: 'store',
+            type: 'RESOLVE',
+            args: {
+              requestId: args.requestId,
+              documentId: entry.id,
+              pack: entry.pack,
+            },
+          };
+          game.socket.emit(`module.${MODULE_ID}`, message);
+        } else if (message.handlerName === 'delete') {
+          const entry = await DataStorage.retrieve({ uuid: args.uuid });
+          await entry.delete();
+
+          const message = {
+            handlerName: 'delete',
+            type: 'RESOLVE',
+            args: {
+              requestId: args.requestId,
+            },
+          };
+          game.socket.emit(`module.${MODULE_ID}`, message);
+        }
+      }
+    }
+  });
 });
