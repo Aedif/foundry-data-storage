@@ -4,6 +4,6 @@
         "name": "Hide Managed Packs",
         "hint": "Packs with data records managed by this module will be hidden in the sidebar."
     },
-    "browse": "Browse Data Records"
+    "browser": "Browse Data Records"
   }
 }

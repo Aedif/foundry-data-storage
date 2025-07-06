@@ -18,6 +18,7 @@
   ],
   "esmodules": ["data-storage.js"],
   "scripts": [],
+  "socket": true,
   "relationships": {
     "requires": [
       {

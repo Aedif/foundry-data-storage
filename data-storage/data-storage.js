@@ -7,10 +7,10 @@ const MODULE_ID = 'data-storage';
  */
 class Entry {
   /**
-   * @param {string} id
-   * @param {string} pack
+   * @param {string} id underlying document id
+   * @param {string} pack pack the entry is stored within
    * @param {object} index { name, thumb, tags, type, desc };
-   * @param {Document} document
+   * @param {Document} document underlying document
    */
   constructor(id, pack, index, document) {
     this.id = id;
@@ -28,7 +28,7 @@ class Entry {
 
   /**
    * Update Entry
-   * @param {object} update
+   * @param {object} update object containing DataStorage.INDEX_FIELDS and/or data field
    */
   async update(update) {
     if (foundry.utils.isEmpty(update)) return;
@@ -69,7 +69,7 @@ class Entry {
   }
 
   /**
-   * Load the document
+   * Load the underlying document
    * @returns {Document}
    */
   async load() {
@@ -84,14 +84,16 @@ class Entry {
    */
   async delete() {
     if (!game.user.isGM) {
-      if (DataStorage._playerStorePermission) return DataStorage.playerDelete(this.pack, this.id);
-      else return null;
-    }
+      if (DataStorage._playerStorePermission) await DataStorage.playerDelete(this.uuid);
+    } else await game.packs.get(this.pack)?.documentClass.deleteDocuments([this.id], { pack: this.pack });
 
-    return game.packs.get(this.pack)?.documentClass.deleteDocuments([this.id], { pack: this.pack });
+    return this;
   }
 }
 
+/**
+ * Class for handling data storage and retrieval
+ */
 export class DataStorage {
   // Default pack the data records will be stored within
   static DEFAULT_PACK = 'world.data-storage';
@@ -102,11 +104,14 @@ export class DataStorage {
   // Entry fields stored within the index
   static INDEX_FIELDS = { name: 'string', thumb: 'string', tags: 'Array', type: 'string', desc: 'string' };
 
+  // Default thumbnail image assigned to Entries
   static DEFAULT_THUMB = 'icons/svg/book.svg';
 
   // Unresolved player store/delete requests
   static _requests = {};
 
+  // Initialize hooks to manage update, deletion, and creation of managed document types,
+  // hiding of managed compendiums, and read player store permission setting
   static _init() {
     const managedDocumentTypes = game.settings.get(MODULE_ID, 'managedDocumentTypes');
     for (const documentType of managedDocumentTypes) {
@@ -415,15 +420,14 @@ export class DataStorage {
 
   /**
    * Handle player request to delete an Entry
-   * @param {string} pack
-   * @param {string} id
+   * @param {string} uuid
    * @returns
    */
-  static playerDelete(pack, id) {
+  static playerDelete(uuid) {
     const requestId = foundry.utils.randomID();
     const message = {
       handlerName: 'delete',
-      args: { pack, id, requestId },
+      args: { uuid, requestId },
       type: 'PLAYER_REQUEST',
     };
     game.socket.emit(`module.${MODULE_ID}`, message);
@@ -452,8 +456,21 @@ export class DataStorage {
 
   /**
    * Retrieves entries matching the provided criteria.
-   * @param {*} param0
-   * @returns
+   * @param {object} options
+   * @param {string} [options.uuid]                      UUID of the underlying Entry document
+   * @param {string} [options.name]                      Entry name
+   * @param {string|Array[string]} [options.types]       Entry type/s
+   * @param {Array[string]} [options.tags]               Tags
+   * @param {string} [options.query]                     Search query consisting of:
+   *                                                       Space separated terms e.g. "red car"
+   *                                                       Types e.g. "@tmfx-node"
+   *                                                       Tags e.g. "#light #source"
+   *                                                       Negative match e.g. "-red -#light"
+   *                                                       Combination of all of the above e.g. "car -red @node #player"
+   * @param {boolean} [options.matchAnyTag]              Should any or all tags be present within an entry for a match
+   * @param {boolean} [options.full]                     If 'true' all entries will have their documents loaded before being returned
+   * @param {Array[Entry]} [options.entries]             If provided the search will be carried out on this array
+   * @returns {Array[Entry]}
    */
   static async retrieve({ uuid, name, types, query, tags, matchAnyTag = true, full = false, entries } = {}) {
     if (uuid) {
@@ -713,9 +730,9 @@ Hooks.on('init', () => {
     const args = message.args;
 
     if (message.type === 'RESOLVE') {
-      if (message.handlerName === 'store') this._resolvePlayerStoreRequest(args);
-      else if (message.handlerName === 'delete') this._resolvePlayerDeleteRequest(args);
-    } else {
+      if (message.handlerName === 'store') DataStorage._resolvePlayerStoreRequest(args);
+      else if (message.handlerName === 'delete') DataStorage._resolvePlayerDeleteRequest(args);
+    } else if (game.user.isGM) {
       if (
         game.users.filter((u) => u.active && u.isGM).sort((a, b) => b.role - a.role || a.id.compare(b.id))[0]?.isSelf
       ) {
