@@ -137,7 +137,7 @@ export class DataStorage {
   /**
    * Open application to view and delete records
    */
-  static openBrowser() {
+  static browser() {
     new DataBrowser().render(true);
   }
 
@@ -319,7 +319,7 @@ export class DataStorage {
   }
 
   /**
-   * Store provided data as a document within the working compendium
+   * Store provided data as a document within a compendium
    * Name, thumb, tags, type, and desc are index fields
    * Data is the payload to be stored as a document
    * Index will also be stored as part of the document as a separate field for recovery purposes in-case the META/Index document is deleted
@@ -455,7 +455,7 @@ export class DataStorage {
   }
 
   /**
-   * Retrieves entries matching the provided criteria.
+   * Retrieves entries matching the criteria
    * @param {object} options
    * @param {string} [options.uuid]                      UUID of the underlying Entry document
    * @param {string} [options.name]                      Entry name
@@ -468,17 +468,27 @@ export class DataStorage {
    *                                                       Negative match e.g. "-red -#light"
    *                                                       Combination of all of the above e.g. "car -red @node #player"
    * @param {boolean} [options.matchAnyTag]              Should any or all tags be present within an entry for a match
-   * @param {boolean} [options.full]                     If 'true' all entries will have their documents loaded before being returned
+   * @param {boolean} [options.load]                     If 'true' all entries will have their documents loaded before being returned
+   * @param {boolean} [options.data]                     If 'true' array of all matched data will be returned instead of entries
    * @param {Array[Entry]} [options.entries]             If provided the search will be carried out on this array
-   * @returns {Array[Entry]}
+   * @returns {Array[Entry]|Array[object]}
    */
-  static async retrieve({ uuid, name, types, query, tags, matchAnyTag = true, full = false, entries } = {}) {
+  static async retrieve({
+    uuid,
+    name,
+    types,
+    query,
+    tags,
+    matchAnyTag = true,
+    load = false,
+    data = false,
+    entries,
+  } = {}) {
+    if (data) load = true;
+
     if (uuid) {
       const uuids = Array.isArray(uuid) ? uuid : [uuid];
-      entries = await this.getEntriesFromUUID(uuids, { full });
-
-      // If a single UUID has been requested lets return it as an Entry not an array
-      if (entries && !Array.isArray(uuid)) return entries[0];
+      entries = await this.getEntriesFromUUID(uuids, { load });
     } else if (!name && !types && !tags && !query)
       throw Error('UUID, Name, Types, Tags, and/or Query required to retrieve Entries.');
     else if (query && (types || tags || name))
@@ -500,8 +510,13 @@ export class DataStorage {
       if (entries) entries = entries.filter((entry) => this._matchEntry(entry, search, negativeSearch));
       else entries = await this._search(search, negativeSearch);
 
-      if (full) await this._batchLoadEntries(results);
+      if (load) await this._batchLoadEntries(results);
     }
+
+    if (data) entries = entries.map((entry) => entry.data());
+
+    // If a single UUID has been requested lets return it as a single object
+    if (uuid && !Array.isArray(uuid)) return entries[0];
 
     return entries;
   }
@@ -584,10 +599,10 @@ export class DataStorage {
    * Returns provided UUIDs as Entries
    * @param {Array[string]|string} uuids
    * @param {object} [options]
-   * @param {boolean} [options.full] Should the associated entry documents be immediately loaded?
+   * @param {boolean} [options.load] Should the associated entry documents be immediately loaded?
    * @returns {Array[Entry]}
    */
-  static async getEntriesFromUUID(uuids, { full = true }) {
+  static async getEntriesFromUUID(uuids, { load = true }) {
     if (!Array.isArray(uuids)) uuids = [uuids];
     const entries = [];
 
@@ -605,7 +620,7 @@ export class DataStorage {
       }
     }
 
-    if (full) return this._batchLoadEntries(entries);
+    if (load) return this._batchLoadEntries(entries);
     return entries;
   }
 
