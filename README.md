@@ -1,3 +1,7 @@
+![GitHub Latest Version](https://img.shields.io/github/v/release/Aedif/foundry-data-storage?sort=semver)
+![GitHub Latest Release](https://img.shields.io/github/downloads/Aedif/foundry-data-storage/latest/data-storage.zip)
+![GitHub All Releases](https://img.shields.io/github/downloads/Aedif/foundry-data-storage/data-storage.zip)
+
 # Foundry Data Storage
 
 Library module to allow the use of compendiums as generic data storage
